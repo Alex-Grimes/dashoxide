@@ -4,11 +4,13 @@ use sysinfo::{Components, Cpu, Disks, Networks, System};
 
 fn main() {
     let mut sys = System::new_all();
-    let mut disk_list = Disks::new_with_refreshed_list();
+    let disk_list = Disks::new_with_refreshed_list();
+    let network_list = Networks::new_with_refreshed_list();
+
     loop {
         sys.refresh_all();
-        for cpu in sys.cpus() {
-            println!("CPU Usage: {}%", cpu.cpu_usage());
+        for (index, cpu) in sys.cpus().iter().enumerate() {
+            println!("CPU {} Usage: {}%", index, cpu.cpu_usage());
         }
 
         println!(
@@ -19,6 +21,10 @@ fn main() {
 
         for disk in disk_list.list() {
             println!("Disk: {disk:?}");
+        }
+
+        for network in network_list.list() {
+            println!("Network: {network:?}");
         }
 
         thread::sleep(Duration::from_secs(1));
