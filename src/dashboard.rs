@@ -2,7 +2,11 @@ use crossterm::{
     event::{self, Event, KeyCode},
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use std::{io, time::Duration};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 use tui::{
     Terminal,
     backend::{self, CrosstermBackend},
@@ -12,6 +16,8 @@ use tui::{
     text::{Span, Spans},
     widgets::{Block, Borders, Paragraph, Tabs},
 };
+
+use crate::util::SystemState;
 
 #[derive(Clone, Copy)]
 enum DashboardView {
@@ -26,13 +32,15 @@ enum DashboardView {
 pub struct Dashboard {
     current_view: DashboardView,
     should_quit: bool,
+    system_state: Arc<Mutex<SystemState>>,
 }
 
 impl Dashboard {
-    pub fn new() -> Self {
+    pub fn new(system_state: Arc<Mutex<SystemState>>) -> Self {
         Self {
             current_view: DashboardView::Overview,
             should_quit: false,
+            system_state,
         }
     }
 
