@@ -12,9 +12,9 @@ use tui::{
     backend::{self, CrosstermBackend},
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    terminal,
+    symbols, terminal,
     text::{Span, Spans},
-    widgets::{Block, Borders, Paragraph, Tabs},
+    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, Gauge, Paragraph, Row, Table, Tabs},
 };
 
 use crate::util::SystemState;
@@ -118,6 +118,11 @@ impl Dashboard {
         f: &mut tui::Frame<'_, CrosstermBackend<io::Stdout>>,
         area: tui::layout::Rect,
     ) {
+        let state = match self.system_state.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(
@@ -131,14 +136,41 @@ impl Dashboard {
                 .as_ref(),
             )
             .split(area);
-        let cpu_summary = Block::default().title("CPU Summary").borders(Borders::ALL);
+
+        let cpu_usage = state.system.global_cpu_usage();
+        let cpu_summary = Paragraph::new(vec![
+            Spans::from(vec![Span::raw(format!("CPU Usage: {:.1}%", cpu_usage))]),
+            Spans::from(vec![Span::raw(format!(
+                "Cores: {}",
+                state.system.cpus().iter().count()
+            ))]),
+        ])
+        .block(Block::default().title("CPU Summary").borders(Borders::ALL));
         f.render_widget(cpu_summary, chunks[0]);
 
-        let memory_summary = Block::default()
-            .title("Memory Summary")
-            .borders(Borders::ALL);
+        let mem_used = state.system.used_memory();
+        let mem_total = state.system.total_memory();
+        let mem_percent = (mem_used as f64 / mem_total as f64 * 100.0) as u64;
+
+        let memory_summary = Paragraph::new(vec![
+            Spans::from(vec![Span::raw(format!("Memory Usage: {}%", mem_percent))]),
+            Spans::from(vec![Span::raw(format!(
+                "Used: {:.2} GB",
+                mem_used as f64 / 1_000_000_000.0
+            ))]),
+            Spans::from(vec![Span::raw(format!(
+                "Total: {:.2} GB",
+                mem_total as f64 / 1_000_000_000.0
+            ))]),
+        ])
+        .block(
+            Block::default()
+                .title("Memory Summary")
+                .borders(Borders::ALL),
+        );
         f.render_widget(memory_summary, chunks[1]);
 
+        let dist_list = state.disk.list();
         let disk_summary = Block::default().title("Disk Summary").borders(Borders::ALL);
         f.render_widget(disk_summary, chunks[2]);
 
@@ -181,6 +213,72 @@ impl Dashboard {
         f: &mut tui::Frame<'_, CrosstermBackend<io::Stdout>>,
         area: tui::layout::Rect,
     ) {
+        let state = match self.system_state.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+            .split(area);
+        let cpu_usage = state.system.global_cpu_usage();
+        let cpu_usage_text = format!("CPU Usage: {:.1}%", cpu_usage);
+
+        let cpu_gauge = Gauge::default()
+            .block(
+                Block::default()
+                    .title("Current CPU Usage")
+                    .borders(Borders::ALL),
+            )
+            .gauge_style(Style::default().fg(Color::Cyan))
+            .percent(cpu_usage as u16);
+
+        f.render_widget(cpu_gauge, chunks[0]);
+
+        let cpu_history = &state.cpu_history;
+
+        let mut chart_data: Vec<(f64, f64)> = Vec::new();
+        for (i, &usage) in cpu_history.iter().enumerate() {
+            chart_data.push((i as f64, usage as f64));
+        }
+
+        let datasets = vec![
+            Dataset::default()
+                .name("CPU Usage")
+                .marker(symbols::Marker::Braille)
+                .style(Style::default().fg(Color::Cyan))
+                .data(&chart_data),
+        ];
+
+        let chart = Chart::new(datasets)
+            .block(Block::default().title("CPU History").borders(Borders::ALL))
+            .x_axis(
+                Axis::default()
+                    .title(Span::styled("Time", Style::default().fg(Color::Red)))
+                    .style(Style::default().fg(Color::White))
+                    .bounds([0.0, 60.0])
+                    .labels(
+                        ["60s ago", "30s ago", "now"]
+                            .iter()
+                            .map(|s| Span::styled(*s, Style::default().fg(Color::White)))
+                            .collect(),
+                    ),
+            )
+            .y_axis(
+                Axis::default()
+                    .title(Span::styled("Usage (%)", Style::default().fg(Color::Red)))
+                    .style(Style::default().fg(Color::White))
+                    .bounds([0.0, 100.0])
+                    .labels(
+                        ["0%", "50%", "100%"]
+                            .iter()
+                            .map(|s| Span::styled(*s, Style::default().fg(Color::White)))
+                            .collect(),
+                    ),
+            );
+        f.render_widget(chart, chunks[1]);
+
         let cpu_block = Block::default().title("CPU Details").borders(Borders::ALL);
         f.render_widget(cpu_block, area);
     }
@@ -221,9 +319,44 @@ impl Dashboard {
         f: &mut tui::Frame<'_, CrosstermBackend<io::Stdout>>,
         area: tui::layout::Rect,
     ) {
-        let processes_block = Block::default()
-            .title("Processes Details")
-            .borders(Borders::ALL);
+        let state = match self.system_state.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        let headers = ["PID", "Name", "CPU%", "Memory", "Status"];
+        let header_cells = headers.iter().map(|h| Cell::from(*h));
+        let header = Row::new(header_cells).style(Style::default().fg(Color::Yellow));
+
+        let mut rows = Vec::new();
+        for (pid, process) in state.system.processes() {
+            let row = Row::new(vec![
+                Cell::from(pid.to_string()),
+                Cell::from(process.name().to_string_lossy()),
+                Cell::from(format!("{:.1}%", process.cpu_usage())),
+                Cell::from(format!("{} MB", process.memory() / 1024 / 1024)),
+                Cell::from(format!("{:?}", process.status())),
+            ]);
+            rows.push(row);
+        }
+
+        let constraints = [
+            Constraint::Length(7),
+            Constraint::Percentage(40),
+            Constraint::Length(8),
+            Constraint::Length(10),
+            Constraint::Length(10),
+        ];
+
+        let processes_block = Table::new(rows)
+            .header(header)
+            .block(
+                Block::default()
+                    .title("Processes Details")
+                    .borders(Borders::ALL),
+            )
+            .widths(&constraints)
+            .highlight_style(Style::default().bg(Color::DarkGray));
         f.render_widget(processes_block, area);
     }
 }

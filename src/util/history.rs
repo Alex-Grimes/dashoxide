@@ -1,18 +1,21 @@
-use sysinfo::System;
+use sysinfo::{Disks, System};
 
 pub struct SystemState {
-    system: System,
-    cpu_history: Vec<f32>,
-    memory_history: Vec<(u64, u64)>,
+    pub system: System,
+    pub disk: Disks,
+    pub cpu_history: Vec<f32>,
+    pub memory_history: Vec<(u64, u64)>,
 }
 
 impl SystemState {
     pub fn new() -> Self {
         let mut system = System::new_all();
+        let disk = Disks::new_with_refreshed_list();
         system.refresh_all();
 
         Self {
             system,
+            disk,
             cpu_history: Vec::with_capacity(60),
             memory_history: Vec::with_capacity(60),
         }
