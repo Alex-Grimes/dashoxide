@@ -170,7 +170,6 @@ impl Dashboard {
         );
         f.render_widget(memory_summary, chunks[1]);
 
-        let dist_list = state.disk.list();
         let disk_summary = Block::default().title("Disk Summary").borders(Borders::ALL);
         f.render_widget(disk_summary, chunks[2]);
 

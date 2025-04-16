@@ -1,5 +1,3 @@
-use std::process;
-
 use sysinfo::{Disks, Networks, System};
 
 pub struct SystemState {
@@ -62,7 +60,8 @@ impl SystemState {
         }
         let mut rx_bytes = 0;
         let mut tx_bytes = 0;
-        for (_interface_name, data) in self.networks.iter() {
+        let network_list = Networks::new_with_refreshed_list();
+        for (_interface_name, data) in &network_list {
             rx_bytes += data.received();
             tx_bytes += data.transmitted();
         }
