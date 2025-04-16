@@ -1,3 +1,5 @@
+use std::process;
+
 use sysinfo::{Disks, Networks, System};
 
 pub struct SystemState {
@@ -49,19 +51,15 @@ impl SystemState {
             self.memory_history.remove(0);
         }
 
-        let disk_stats: Vec<(u64, u64)> = self
-            .disks
-            .iter()
-            .map(|disk| {
-                // Placeholder
-                (0, 0)
-            })
-            .collect();
-        self.disk_history.push(disk_stats);
-        if self.disk_history.len() > 60 {
-            self.disk_history.remove(0);
-        }
+        for (pid, process) in self.system.processes() {
+            let disk_usage = process.disk_usage();
+            let disk_stats: (u64, u64) = (disk_usage.read_bytes, disk_usage.written_bytes);
 
+            self.disk_history.push(disk_stats);
+            if self.disk_history.len() > 60 {
+                self.disk_history.remove(0);
+            }
+        }
         let mut rx_bytes = 0;
         let mut tx_bytes = 0;
         for (_interface_name, data) in self.networks.iter() {
