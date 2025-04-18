@@ -2,7 +2,7 @@ use sysinfo::{Disks, Networks, System};
 
 pub struct SystemState {
     pub system: System,
-    pub disks: Vec<String>,
+    pub disks: Disks,
     pub networks: Vec<String>,
     pub cpu_history: Vec<f32>,
     pub memory_history: Vec<(u64, u64)>,
@@ -15,10 +15,7 @@ impl SystemState {
         let mut system = System::new_all();
         system.refresh_all();
 
-        let disks: Vec<String> = Disks::new_with_refreshed_list()
-            .iter()
-            .map(|disk| disk.name().to_string_lossy().into_owned())
-            .collect();
+        let disks = Disks::new_with_refreshed_list();
 
         let networks: Vec<String> = Networks::new().keys().map(|name| name.clone()).collect();
 

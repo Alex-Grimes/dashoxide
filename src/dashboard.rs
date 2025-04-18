@@ -298,6 +298,40 @@ impl Dashboard {
         f: &mut tui::Frame<'_, CrosstermBackend<io::Stdout>>,
         area: tui::layout::Rect,
     ) {
+        let state = match self.system_state.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+            .split(area);
+
+        let mut total_space = 0;
+        let mut used_space = 0;
+
+        for disk in state.disks.list() {
+            total_space += disk.total_space();
+            used_space += disk.total_space() - disk.available_space();
+        }
+
+        let disk_usage_percent = if total_space > 0 {
+            (used_space as f64 / total_space as f64 * 100.0) as u16
+        } else {
+            0
+        };
+
+        let disk_guage = Gauge::default()
+            .block(
+                Block::default()
+                    .title("Total Disk Usage")
+                    .borders(Borders::ALL),
+            )
+            .gauge_style(Style::default().fg(Color::Blue))
+            .percent(disk_usage_percent);
+        f.render_widget(disk_guage, chunks[0]);
         let disk_block = Block::default().title("Disk Details").borders(Borders::ALL);
         f.render_widget(disk_block, area);
     }
