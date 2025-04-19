@@ -379,6 +379,62 @@ impl Dashboard {
         f: &mut tui::Frame<'_, CrosstermBackend<io::Stdout>>,
         area: tui::layout::Rect,
     ) {
+        let state = match self.system_state.lock() {
+            Ok(guard) => guard,
+            Err(_) => return,
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .margin(1)
+            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+            .split(area);
+
+        let mut total_rx = 0;
+        let mut total_tx = 0;
+
+        let rx_rate = if state.network_history.len() >= 2 {
+            let current = state.network_history[state.network_history.len() - 1].0;
+            let previous = state.network_history[state.network_history.len() - 2].0;
+            if current > previous {
+                current - previous
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let tx_rate = if state.network_history.len() >= 2 {
+            let current = state.network_history[state.network_history.len() - 1].1;
+            let previous = state.network_history[state.network_history.len() - 2].1;
+            if current > previous {
+                current - previous
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        let network_summary = Paragraph::new(vec![
+            Spans::from(vec![Span::raw(format!(
+                "Download: {:.2} KB/s",
+                rx_rate as f64 / 1024.0
+            ))]),
+            Spans::from(vec![Span::raw(format!(
+                "Upload: {:.2} KB/s",
+                tx_rate as f64 / 1024.0
+            ))]),
+        ])
+        .block(
+            Block::default()
+                .title("Network Traffic")
+                .borders(Borders::ALL),
+        )
+        .alignment(tui::layout::Alignment::Center);
+
+        f.render_widget(network_summary, chunks[0]);
         let network_block = Block::default()
             .title("Network Details")
             .borders(Borders::ALL);
