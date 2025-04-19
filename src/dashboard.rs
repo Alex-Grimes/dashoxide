@@ -9,10 +9,10 @@ use std::{
 };
 use tui::{
     Terminal,
-    backend::{self, CrosstermBackend},
+    backend::CrosstermBackend,
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
-    symbols, terminal,
+    symbols,
     text::{Span, Spans},
     widgets::{Axis, Block, Borders, Cell, Chart, Dataset, Gauge, Paragraph, Row, Table, Tabs},
 };
