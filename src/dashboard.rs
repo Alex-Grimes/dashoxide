@@ -332,6 +332,44 @@ impl Dashboard {
             .gauge_style(Style::default().fg(Color::Blue))
             .percent(disk_usage_percent);
         f.render_widget(disk_guage, chunks[0]);
+
+        let headers = ["Mount", "Total", "Used", "Available", "Usage %"];
+        let header_cells = headers.iter().map(|h| Cell::from(*h));
+        let header = Row::new(header_cells).style(Style::default().fg(Color::Yellow));
+
+        let mut rows = Vec::new();
+        for disk in state.disks.list() {
+            let mount_point = disk.mount_point().to_string_lossy();
+            let total = disk.total_space();
+            let available = disk.available_space();
+            let used = total - available;
+            let usage_percent = if total > 0 {
+                (used as f64 / total as f64 * 100.0) as u64
+            } else {
+                0
+            };
+
+            let row = Row::new(vec![
+                Cell::from(mount_point.to_string()),
+                Cell::from(format!("{:.1} GB", total as f64 / 1_000_000_000.0)),
+                Cell::from(format!("{:.1} GB", used as f64 / 1_000_000_000.0)),
+                Cell::from(format!("{:.1} GB", available as f64 / 1_000_000_000.0)),
+                Cell::from(format!("{}%", usage_percent)),
+            ]);
+            rows.push(row);
+        }
+        let table = Table::new(rows)
+            .header(header)
+            .block(Block::default().title("Disk Details").borders(Borders::ALL))
+            .widths(&[
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+                Constraint::Percentage(20),
+            ])
+            .highlight_style(Style::default().bg(Color::DarkGray));
+        f.render_widget(table, chunks[1]);
         let disk_block = Block::default().title("Disk Details").borders(Borders::ALL);
         f.render_widget(disk_block, area);
     }
