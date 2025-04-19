@@ -393,14 +393,12 @@ impl Dashboard {
         let mut total_rx = 0;
         let mut total_tx = 0;
 
+        let network_history = &state.network_history;
+
         let rx_rate = if state.network_history.len() >= 2 {
             let current = state.network_history[state.network_history.len() - 1].0;
             let previous = state.network_history[state.network_history.len() - 2].0;
-            if current > previous {
-                current - previous
-            } else {
-                0
-            }
+            current.saturating_sub(previous)
         } else {
             0
         };
@@ -408,11 +406,7 @@ impl Dashboard {
         let tx_rate = if state.network_history.len() >= 2 {
             let current = state.network_history[state.network_history.len() - 1].1;
             let previous = state.network_history[state.network_history.len() - 2].1;
-            if current > previous {
-                current - previous
-            } else {
-                0
-            }
+            current.saturating_sub(previous)
         } else {
             0
         };
@@ -435,6 +429,40 @@ impl Dashboard {
         .alignment(tui::layout::Alignment::Center);
 
         f.render_widget(network_summary, chunks[0]);
+
+        let headers = ["Interface", "IP", "Recived", "Transmitted"];
+        let header_cells = headers.iter().map(|h| Cell::from(*h));
+        let header = Row::new(header_cells).style(Style::default().fg(Color::Yellow));
+
+        let mut rows = Vec::new();
+        for (interface_name, data) in state.networks.list() {
+            let ip = "N/A";
+
+            let row = Row::new(vec![
+                Cell::from(interface_name.clone()),
+                Cell::from(ip),
+                Cell::from(format!("{:.2} MB", data.received() as f64 / 1_000_000.0)),
+                Cell::from(format!("{:.2} MB", data.transmitted() as f64 / 1_000_000.0)),
+            ]);
+            rows.push(row);
+        }
+
+        let table = Table::new(rows)
+            .header(header)
+            .block(
+                Block::default()
+                    .title("Network Interfaces")
+                    .borders(Borders::ALL),
+            )
+            .widths(&[
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+                Constraint::Percentage(25),
+            ])
+            .highlight_style(Style::default().bg(Color::DarkGray));
+        f.render_widget(table, chunks[1]);
+
         let network_block = Block::default()
             .title("Network Details")
             .borders(Borders::ALL);
