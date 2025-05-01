@@ -395,6 +395,19 @@ impl Dashboard {
 
         let network_history = &state.network_history;
 
+        let mut rx_data: Vec<_> = Vec::new();
+        let mut tx_data: Vec<_> = Vec::new();
+
+        for i in 1..network_history.len() {
+            let rx_current = network_history[i].0;
+            let rx_prev = network_history[i - 1].1;
+            let rx_rate = if rx_current > rx_prev {
+                rx_current - rx_prev
+            } else {
+                0
+            };
+        }
+
         let rx_rate = if state.network_history.len() >= 2 {
             let current = state.network_history[state.network_history.len() - 1].0;
             let previous = state.network_history[state.network_history.len() - 2].0;
