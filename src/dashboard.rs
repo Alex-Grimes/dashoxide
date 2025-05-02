@@ -395,19 +395,83 @@ impl Dashboard {
 
         let network_history = &state.network_history;
 
-        let mut rx_data: Vec<_> = Vec::new();
-        let mut tx_data: Vec<_> = Vec::new();
+        let mut rx_data: Vec<(f64, f64)> = Vec::new();
+        let mut tx_data: Vec<(f64, f64)> = Vec::new();
 
         for i in 1..network_history.len() {
             let rx_current = network_history[i].0;
-            let rx_prev = network_history[i - 1].1;
+            let rx_prev = network_history[i - 1].0;
             let rx_rate = if rx_current > rx_prev {
                 rx_current - rx_prev
             } else {
                 0
             };
+            let tx_current = network_history[i].1;
+            let tx_prev = network_history[i - 1].1;
+            let tx_rate = if rx_current > rx_prev {
+                tx_current - tx_prev
+            } else {
+                0
+            };
+
+            rx_data.push((i as f64, rx_rate as f64 / 1024.0));
+            tx_data.push((i as f64, tx_rate as f64 / 1024.0));
         }
 
+        let datasets = vec![
+            Dataset::default()
+                .name("Download")
+                .marker(symbols::Marker::Braille)
+                .style(Style::default().fg(Color::Green))
+                .data(&rx_data),
+            Dataset::default()
+                .name("Upload")
+                .marker(symbols::Marker::Braille)
+                .style(Style::default().fg(Color::Red))
+                .data(&tx_data),
+        ];
+        let max_rate = rx_data
+            .iter()
+            .chain(tx_data.iter())
+            .map(|&(_, v)| v)
+            .fold(1.0, |max, v| if v > max { v } else { max });
+
+        let chart = Chart::new(datasets)
+            .block(
+                Block::default()
+                    .title("Network Traffic (KB/s)")
+                    .borders(Borders::ALL),
+            )
+            .x_axis(
+                Axis::default()
+                    .title(Span::styled("Time", Style::default().fg(Color::Red)))
+                    .style(Style::default().fg(Color::White))
+                    .bounds([0.0, network_history.len() as f64])
+                    .labels(
+                        ["60s ago", "30s ago", "now"]
+                            .iter()
+                            .map(|s| Span::styled(*s, Style::default().fg(Color::White)))
+                            .collect(),
+                    ),
+            )
+            .y_axis(
+                Axis::default()
+                    .title(Span::styled("KB/s", Style::default().fg(Color::Red)))
+                    .style(Style::default().fg(Color::White))
+                    .bounds([0.0, max_rate * 1.1]) // Add 10% headroom
+                    .labels(
+                        [
+                            "0",
+                            &format!("{:.0}", max_rate / 2.0),
+                            &format!("{:.0}", max_rate),
+                        ]
+                        .iter()
+                        .map(|s| Span::styled(*s, Style::default().fg(Color::White)))
+                        .collect(),
+                    ),
+            );
+
+        f.render_widget(chart, chunks[1]);
         let rx_rate = if state.network_history.len() >= 2 {
             let current = state.network_history[state.network_history.len() - 1].0;
             let previous = state.network_history[state.network_history.len() - 2].0;
