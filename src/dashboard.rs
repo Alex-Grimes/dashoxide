@@ -379,9 +379,15 @@ impl Dashboard {
         f: &mut tui::Frame<'_, CrosstermBackend<io::Stdout>>,
         area: tui::layout::Rect,
     ) {
-        let state = match self.system_state.lock() {
-            Ok(guard) => guard,
-            Err(_) => return,
+        let state_guard = self.system_state.lock();
+        let state = match state_guard {
+            Ok(ref state) => state,
+            Err(_) => {
+                let error_msg = Paragraph::new("Error: Could not access system state.")
+                    .style(Style::default().fg(Color::Red));
+                f.render_widget(error_msg, area);
+                return;
+            }
         };
 
         let chunks = Layout::default()
