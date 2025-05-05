@@ -32,6 +32,7 @@ impl SystemState {
 
     pub fn update(&mut self) {
         self.system.refresh_all();
+        self.networks.refresh(true);
 
         let cpu_usage = self.system.global_cpu_usage();
         self.cpu_history.push(cpu_usage);
@@ -57,8 +58,7 @@ impl SystemState {
         }
         let mut rx_bytes = 0;
         let mut tx_bytes = 0;
-        let network_list = Networks::new_with_refreshed_list();
-        for (_interface_name, data) in &network_list {
+        for (_, data) in self.networks.list() {
             rx_bytes += data.received();
             tx_bytes += data.transmitted();
         }

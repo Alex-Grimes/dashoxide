@@ -4,17 +4,20 @@ use crossterm::{
 };
 use std::{
     io,
+    os::linux::raw::stat,
     sync::{Arc, Mutex},
     time::Duration,
 };
 use tui::{
     Terminal,
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout},
+    layout::{Alignment, Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     symbols,
     text::{Span, Spans},
-    widgets::{Axis, Block, Borders, Cell, Chart, Dataset, Gauge, Paragraph, Row, Table, Tabs},
+    widgets::{
+        Axis, Block, Borders, Cell, Chart, Dataset, Gauge, GraphType, Paragraph, Row, Table, Tabs,
+    },
 };
 
 use crate::util::SystemState;
@@ -170,12 +173,68 @@ impl Dashboard {
         );
         f.render_widget(memory_summary, chunks[1]);
 
-        let disk_summary = Block::default().title("Disk Summary").borders(Borders::ALL);
+        let mut total_space = 0;
+        let mut total_used = 0;
+        for disk in state.disks.list() {
+            total_space += disk.total_space();
+            total_used += disk.total_space() - disk.available_space();
+        }
+        let disk_percent = if total_space > 0 {
+            total_used as f64 / total_space as f64 * 100.0
+        } else {
+            0.0
+        };
+        let disk_unit = 1_000_000_000;
+        let disk_summary = Paragraph::new(vec![
+            Spans::from(format!("Usage: {:.1}%", disk_percent)),
+            Spans::from(format!(
+                "Used: {:.} GB",
+                total_used as f64 / disk_unit as f64
+            )),
+        ])
+        .block(Block::default().title("Disk Summary").borders(Borders::ALL));
         f.render_widget(disk_summary, chunks[2]);
 
-        let network_summary = Block::default()
-            .title("Network Summary")
-            .borders(Borders::ALL);
+        let (rx_rate, tx_rate) = if state.network_history.len() >= 2 {
+            let current = state.network_history.iter().nth_back(0).unwrap();
+            let previous = state.network_history.iter().nth_back(1).unwrap();
+            (
+                current.0.saturating_sub(previous.0),
+                current.1.saturating_sub(previous.1),
+            )
+        } else {
+            (0, 0)
+        };
+
+        fn format_rate(bytes_per_sec: u64) -> String {
+            const KB: f64 = 1024.0;
+            const MB: f64 = 1024.0 * KB;
+            if bytes_per_sec == 0 {
+                return "0 B/s".to_string();
+            }
+            let rate = bytes_per_sec as f64;
+            if rate < KB {
+                format!("{} B/s", rate / KB)
+            } else {
+                format!("{:.1} MB/s", rate / MB)
+            }
+        }
+
+        let network_summary = Paragraph::new(vec![
+            Spans::from(vec![
+                Span::styled("Down: ", Style::default().fg(Color::Green)),
+                Span::raw(format_rate(rx_rate)),
+            ]),
+            Spans::from(vec![
+                Span::styled("Up: ", Style::default().fg(Color::Red)),
+                Span::raw(format_rate(tx_rate)),
+            ]),
+        ])
+        .block(
+            Block::default()
+                .title("Network Summary")
+                .borders(Borders::ALL),
+        );
         f.render_widget(network_summary, chunks[3]);
     }
 
@@ -245,7 +304,7 @@ impl Dashboard {
         let datasets = vec![
             Dataset::default()
                 .name("CPU Usage")
-                .marker(symbols::Marker::Braille)
+                .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::Cyan))
                 .data(&chart_data),
         ];
@@ -287,10 +346,79 @@ impl Dashboard {
         f: &mut tui::Frame<'_, CrosstermBackend<io::Stdout>>,
         area: tui::layout::Rect,
     ) {
-        let memory_block = Block::default()
-            .title("Memory Details")
-            .borders(Borders::ALL);
-        f.render_widget(memory_block, area);
+        let state_guard = self.system_state.lock();
+        let state = match state_guard {
+            Ok(ref state) => state,
+            Err(_) => {
+                f.render_widget(Paragraph::new("Error locking state"), area);
+                return;
+            }
+        };
+
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(
+                [
+                    Constraint::Length(3), // RAM Gauge
+                    Constraint::Length(3), // Swap Gauge
+                    Constraint::Min(5),    // Potentially top memory consuming processes
+                ]
+                .as_ref(),
+            )
+            .split(area);
+
+        // --- RAM ---
+        let mem_total = state.system.total_memory();
+        let mem_used = state.system.used_memory();
+        let mem_percent = if mem_total > 0 {
+            mem_used as f64 / mem_total as f64 * 100.0
+        } else {
+            0.0
+        };
+        let mem_unit = 1_024 * 1_024 * 1_024; // GiB
+
+        let ram_gauge = Gauge::default()
+            .block(Block::default().title("RAM Usage").borders(Borders::ALL))
+            .gauge_style(Style::default().fg(Color::Magenta))
+            .percent(mem_percent.round() as u16)
+            .label(format!(
+                "{:.1}/{:.1} GiB ({:.1}%)",
+                mem_used as f64 / mem_unit as f64,
+                mem_total as f64 / mem_unit as f64,
+                mem_percent
+            ));
+        f.render_widget(ram_gauge, chunks[0]);
+
+        // --- Swap ---
+        let swap_total = state.system.total_swap();
+        let swap_used = state.system.used_swap();
+        let swap_percent = if swap_total > 0 {
+            swap_used as f64 / swap_total as f64 * 100.0
+        } else {
+            0.0
+        };
+
+        let swap_unit = 1_024 * 1_024; // MiB
+
+        let swap_gauge = Gauge::default()
+            .block(Block::default().title("Swap Usage").borders(Borders::ALL))
+            .gauge_style(Style::default().fg(Color::Yellow))
+            .percent(swap_percent.round() as u16)
+            .label(format!(
+                "{:.0}/{:.0} MiB ({:.1}%)",
+                swap_used as f64 / swap_unit as f64,
+                swap_total as f64 / swap_unit as f64,
+                swap_percent
+            ));
+        // Only render swap if it exists
+        if swap_total > 0 {
+            f.render_widget(swap_gauge, chunks[1]);
+        } else {
+            let no_swap = Paragraph::new("No swap configured")
+                .block(Block::default().title("Swap Usage").borders(Borders::ALL))
+                .alignment(Alignment::Center);
+            f.render_widget(no_swap, chunks[1]);
+        }
     }
 
     fn render_disk(
@@ -392,12 +520,56 @@ impl Dashboard {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .margin(1)
-            .constraints([Constraint::Percentage(30), Constraint::Percentage(70)].as_ref())
+            .constraints(
+                [
+                    Constraint::Length(3),      // Current Rates Summary
+                    Constraint::Percentage(50), // Network History Chart
+                    Constraint::Min(5),         // Interface Details Table
+                ]
+                .as_ref(),
+            )
             .split(area);
 
-        let mut total_rx = 0;
-        let mut total_tx = 0;
+        let rate_area = chunks[0];
+        let chart_area = chunks[1];
+        let table_area = chunks[2];
+
+        let (rx_rate, tx_rate) = if state.network_history.len() >= 2 {
+            let current = state.network_history.iter().nth_back(0).unwrap();
+            let previous = state.network_history.iter().nth_back(1).unwrap();
+            (
+                current.0.saturating_sub(previous.0),
+                current.1.saturating_sub(previous.1),
+            )
+        } else {
+            (0, 0)
+        };
+
+        fn format_rate(bytes_per_sec: u64) -> String {
+            const KB: f64 = 1024.0;
+            const MB: f64 = 1024.0 * KB;
+            if bytes_per_sec == 0 {
+                return "0 B/s".to_string();
+            }
+            let rate = bytes_per_sec as f64;
+            if rate < KB {
+                format!("{} B/s", rate / KB)
+            } else {
+                format!("{:.1} MB/s", rate / MB)
+            }
+        }
+
+        let network_summary = Paragraph::new(vec![Spans::from(vec![
+            Span::styled("Down: ", Style::default().fg(Color::Green)),
+            Span::raw(format_rate(tx_rate)),
+        ])])
+        .block(
+            Block::default()
+                .title("Current Traffic Rate")
+                .borders(Borders::ALL),
+        )
+        .alignment(tui::layout::Alignment::Center);
+        f.render_widget(network_summary, rate_area);
 
         let network_history = &state.network_history;
 
@@ -405,127 +577,104 @@ impl Dashboard {
         let mut tx_data: Vec<(f64, f64)> = Vec::new();
 
         for i in 1..network_history.len() {
-            let rx_current = network_history[i].0;
-            let rx_prev = network_history[i - 1].0;
-            let rx_rate = if rx_current > rx_prev {
-                rx_current - rx_prev
-            } else {
-                0
-            };
-            let tx_current = network_history[i].1;
-            let tx_prev = network_history[i - 1].1;
-            let tx_rate = if rx_current > rx_prev {
-                tx_current - tx_prev
-            } else {
-                0
-            };
+            let current = network_history[i];
+            let prev = network_history[i - 1];
 
-            rx_data.push((i as f64, rx_rate as f64 / 1024.0));
-            tx_data.push((i as f64, tx_rate as f64 / 1024.0));
+            let rx_rate_bps = current.0.saturating_sub(prev.0);
+            let tx_rate_bps = current.1.saturating_sub(prev.1);
+
+            rx_data.push((i as f64, rx_rate_bps as f64 / 1024.0));
+            tx_data.push((i as f64, tx_rate_bps as f64 / 1024.0));
         }
 
         let datasets = vec![
             Dataset::default()
-                .name("Download")
-                .marker(symbols::Marker::Braille)
+                .name("Download (KB/s)")
+                .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::Green))
                 .data(&rx_data),
             Dataset::default()
-                .name("Upload")
-                .marker(symbols::Marker::Braille)
+                .name("Upload (KB/s)")
+                .graph_type(GraphType::Line)
                 .style(Style::default().fg(Color::Red))
                 .data(&tx_data),
         ];
-        let max_rate = rx_data
+
+        let max_rate_kbps = rx_data
             .iter()
             .chain(tx_data.iter())
             .map(|&(_, v)| v)
-            .fold(1.0, |max, v| if v > max { v } else { max });
+            .fold(0.0, |max, v| if v.is_finite() && v > max { v } else { max });
+
+        // Set a minimum top bound for the Y axis, e.g., 10 KB/s, and add headroom
+        let y_bound_top = (max_rate_kbps * 1.1).max(10.0);
+        let history_len = state.network_history.len() as f64;
 
         let chart = Chart::new(datasets)
             .block(
                 Block::default()
-                    .title("Network Traffic (KB/s)")
+                    .title("Network History (KB/s)")
                     .borders(Borders::ALL),
             )
             .x_axis(
                 Axis::default()
-                    .title(Span::styled("Time", Style::default().fg(Color::Red)))
-                    .style(Style::default().fg(Color::White))
-                    .bounds([0.0, network_history.len() as f64])
-                    .labels(
-                        ["60s ago", "30s ago", "now"]
-                            .iter()
-                            .map(|s| Span::styled(*s, Style::default().fg(Color::White)))
-                            .collect(),
-                    ),
+                    // .title("Time") // Often redundant
+                    .style(Style::default().fg(Color::Gray))
+                    .bounds([0.0, history_len]) // X represents time steps
+                    .labels(vec![
+                        Span::styled(
+                            format!("{}s", history_len.round()),
+                            Style::default().fg(Color::Gray),
+                        ), // Start label (oldest)
+                        Span::styled("0s", Style::default().fg(Color::Gray)), // End label (now)
+                    ]),
             )
             .y_axis(
                 Axis::default()
-                    .title(Span::styled("KB/s", Style::default().fg(Color::Red)))
-                    .style(Style::default().fg(Color::White))
-                    .bounds([0.0, max_rate * 1.1]) // Add 10% headroom
+                    .title("KB/s")
+                    .style(Style::default().fg(Color::Gray))
+                    .bounds([0.0, y_bound_top]) // Dynamic upper bound
                     .labels(
-                        [
-                            "0",
-                            &format!("{:.0}", max_rate / 2.0),
-                            &format!("{:.0}", max_rate),
-                        ]
-                        .iter()
-                        .map(|s| Span::styled(*s, Style::default().fg(Color::White)))
-                        .collect(),
+                        // Generate labels dynamically based on the top bound
+                        vec![
+                            Span::raw("0"),
+                            Span::raw(format!("{:.0}", y_bound_top / 2.0)),
+                            Span::raw(format!("{:.0}", y_bound_top)),
+                        ],
                     ),
             );
+        f.render_widget(chart, chart_area);
 
-        f.render_widget(chart, chunks[1]);
-        let rx_rate = if state.network_history.len() >= 2 {
-            let current = state.network_history[state.network_history.len() - 1].0;
-            let previous = state.network_history[state.network_history.len() - 2].0;
-            current.saturating_sub(previous)
-        } else {
-            0
-        };
+        let headers = ["Interface Name", "Total Recived", "Total Transmitted"];
+        let header_cells = headers
+            .iter()
+            .map(|h| Cell::from(Span::styled(*h, Style::default().fg(Color::Yellow))));
+        let header = Row::new(header_cells)
+            .style(Style::default().bg(Color::DarkGray))
+            .height(1);
 
-        let tx_rate = if state.network_history.len() >= 2 {
-            let current = state.network_history[state.network_history.len() - 1].1;
-            let previous = state.network_history[state.network_history.len() - 2].1;
-            current.saturating_sub(previous)
-        } else {
-            0
-        };
-
-        let network_summary = Paragraph::new(vec![
-            Spans::from(vec![Span::raw(format!(
-                "Download: {:.2} KB/s",
-                rx_rate as f64 / 1024.0
-            ))]),
-            Spans::from(vec![Span::raw(format!(
-                "Upload: {:.2} KB/s",
-                tx_rate as f64 / 1024.0
-            ))]),
-        ])
-        .block(
-            Block::default()
-                .title("Network Traffic")
-                .borders(Borders::ALL),
-        )
-        .alignment(tui::layout::Alignment::Center);
-
-        f.render_widget(network_summary, chunks[0]);
-
-        let headers = ["Interface", "IP", "Recived", "Transmitted"];
-        let header_cells = headers.iter().map(|h| Cell::from(*h));
-        let header = Row::new(header_cells).style(Style::default().fg(Color::Yellow));
+        fn format_total_bytes(bytes: u64) -> String {
+            const MB: f64 = 1_000_000.0;
+            const GB: f64 = 1_000.0 * MB;
+            if bytes == 0 {
+                return "0 B".to_string();
+            }
+            let b = bytes as f64;
+            if b < MB {
+                format!("{:.1} KB", b / 1000.0)
+            } else if b < GB {
+                format!("{:.2} MB", b / MB)
+            } else {
+                format!("{:.2} GB", b / GB)
+            }
+        }
 
         let mut rows = Vec::new();
         for (interface_name, data) in state.networks.list() {
-            let ip = "N/A";
-
             let row = Row::new(vec![
                 Cell::from(interface_name.clone()),
-                Cell::from(ip),
-                Cell::from(format!("{:.2} MB", data.received() as f64 / 1_000_000.0)),
-                Cell::from(format!("{:.2} MB", data.transmitted() as f64 / 1_000_000.0)),
+                Cell::from(format_total_bytes(data.total_received())),
+                Cell::from(format_total_bytes(data.total_transmitted())),
             ]);
             rows.push(row);
         }
@@ -534,22 +683,17 @@ impl Dashboard {
             .header(header)
             .block(
                 Block::default()
-                    .title("Network Interfaces")
+                    .title("Network Interfaces (Total Data)")
                     .borders(Borders::ALL),
             )
             .widths(&[
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
-                Constraint::Percentage(25),
+                Constraint::Percentage(40),
+                Constraint::Percentage(30),
+                Constraint::Percentage(30),
             ])
-            .highlight_style(Style::default().bg(Color::DarkGray));
-        f.render_widget(table, chunks[1]);
-
-        let network_block = Block::default()
-            .title("Network Details")
-            .borders(Borders::ALL);
-        f.render_widget(network_block, area);
+            .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+            .highlight_symbol(">> ");
+        f.render_widget(table, table_area);
     }
 
     fn render_processes(
